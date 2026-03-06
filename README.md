@@ -37,13 +37,11 @@ if not exist "%EXE_PATH%" (
     exit /b
 )
 
-:: 2. Main Loop - We use 'dir /b /s' but we handle the output very carefully
+:: 2. Main Loop
 for /f "delims=" %%i in ('dir /s /b *.cue ^| findstr /v /i "mergedBin"') do (
-    set "FULL_PATH=%%i"
     set "G_DIR=%%~dpi"
     set "G_NAME_EXT=%%~nxi"
     set "G_NAME_ONLY=%%~ni"
-    
     call :PROCESS_GAME
 )
 
@@ -67,7 +65,6 @@ echo Current Item: "%G_NAME_EXT%"
 
 pushd "%G_DIR%"
 
-:: --- SAFETY CHECK: Count tracks using a method that doesn't care about ' or ! ---
 set "track_count=0"
 for /f "delims=" %%a in ('findstr /i "FILE" "%G_NAME_EXT%"') do (
     set /a track_count+=1
@@ -79,15 +76,12 @@ if %track_count% LEQ 1 (
     goto CHECK_MULTIDISC
 )
 
-:: --- MERGE PHASE ---
 if not exist "mergedBin" mkdir "mergedBin"
 echo [PROCESSING] Merging tracks for "%G_NAME_ONLY%"...
-
-:: Run binmerge with quoted variables
 "%EXE_PATH%" "%G_NAME_EXT%" "mergedBin\%G_NAME_ONLY%"
 
 if not exist "mergedBin\%G_NAME_ONLY%.bin" (
-    echo [ERROR] Merged files were not created.
+    echo [ERROR] Merged files were not found.
     set /a count_errors+=1
     goto CHECK_MULTIDISC
 )
@@ -95,25 +89,31 @@ if not exist "mergedBin\%G_NAME_ONLY%.bin" (
 set /a count_merged+=1
 
 :VERIFY_CLEANUP
-:: We use a temporary variable for the choice to avoid expansion issues
-set "USER_CHOICE=N"
-if "%DELETE_MODE%"=="ALWAYS" (set "USER_CHOICE=Y" & goto DO_DELETE)
-if "%DELETE_MODE%"=="ALWAYS_MOVE" (set "USER_CHOICE=YM" & goto DO_MOVE)
-if "%DELETE_MODE%"=="NEVER" (goto SKIP_DELETE)
+if "%DELETE_MODE%"=="ALWAYS" goto DO_DELETE
+if "%DELETE_MODE%"=="ALWAYS_MOVE" goto DO_MOVE
+if "%DELETE_MODE%"=="NEVER" goto SKIP_DELETE
 
+:ASK_USER
 echo.
 echo Status: Merged files are ready in mergedBin.
-echo Action for ORIGINAL tracks: [Y] Yes, [YM] Yes+Move, [A] All, [AM] All+Move, [N] No, [S] Skip All
+echo.
+echo Action for ORIGINAL tracks:
+echo [Y]  Yes      - Delete originals for THIS disc
+echo [YM] Yes Move - Delete originals AND move merged file to root
+echo [A]  All      - Delete originals for ALL remaining items
+echo [AM] All Move - Delete AND Move for ALL remaining items
+echo [N]  No       - Keep originals for THIS disc
+echo [S]  Skip     - Keep originals for ALL remaining items
+echo.
 set /p choice="Selection: "
 
-:: Use 'if' checks without delayed expansion
 if /i "%choice%"=="Y"  goto DO_DELETE
 if /i "%choice%"=="YM" goto DO_MOVE
 if /i "%choice%"=="A"  (set "DELETE_MODE=ALWAYS" & goto DO_DELETE)
 if /i "%choice%"=="AM" (set "DELETE_MODE=ALWAYS_MOVE" & goto DO_MOVE)
 if /i "%choice%"=="N"  goto SKIP_DELETE
 if /i "%choice%"=="S"  (set "DELETE_MODE=NEVER" & goto SKIP_DELETE)
-goto SKIP_DELETE
+goto ASK_USER
 
 :DO_MOVE
 call :CLEAN_TRACKS
@@ -127,17 +127,15 @@ call :CLEAN_TRACKS
 goto CHECK_MULTIDISC
 
 :SKIP_DELETE
-echo [KEEP] Originals preserved in root. Merged files are in mergedBin.
+echo [KEEP] Originals preserved.
 goto CHECK_MULTIDISC
 
 :CHECK_MULTIDISC
-:: --- MULTI-DISC LST GENERATOR ---
 set "cue_count=0"
 for %%c in (*.cue) do set /a cue_count+=1
 if %cue_count% GTR 1 (
     echo [PSIO] Multi-disc detected. Updating multidisc.lst...
     if exist "multidisc.lst" del "multidisc.lst"
-    :: Shielding the command from quotes and ! via environment variables
     powershell -NoProfile -Command "Get-ChildItem *.cue | ForEach-Object { $c = Get-Content $_.FullName | Select-String 'FILE'; $c.Line.Split([char]34) | Where-Object { $_ -like '*.bin*' } | ForEach-Object { $_.Replace('mergedBin\','') } } | Out-File -FilePath 'multidisc.lst' -Encoding ascii"
 )
 
@@ -146,7 +144,6 @@ exit /b
 
 :CLEAN_TRACKS
 echo [CLEANUP] Removing original tracks...
-:: Using a temporary ENV variable to pass the filename into PowerShell safely
 set "PS_TARGET=%G_NAME_EXT%"
 powershell -NoProfile -Command "$cue = Get-Content $env:PS_TARGET; foreach ($line in $cue) { if ($line -match 'FILE \"(.*)\" BINARY') { $file = $matches[1]; if (Test-Path $file) { Remove-Item -Path $file -Force } } }; Remove-Item -Path $env:PS_TARGET -Force"
 exit /b
@@ -292,3 +289,4 @@ PowerShell then accesses this via `$env:PS_TARGET`. Because the filename is neve
 For **PSIO (PlayStation Input Output)** users, the **[YM]** or **[AM]** options are highly recommended.
 
 PSIO requires a specific folder structure to display cover art correctly. By choosing **Move**, the script places the consolidated `.bin` and `.cue` files directly in the game's root folder. This allows the [PSIO Library Cover Downloader](https://ncirocco.github.io/PSIO-Library/) to scan your folders and match the filenames to its database without manual renaming.
+
